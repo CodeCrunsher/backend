@@ -1,38 +1,20 @@
-"""
-Batcomputer API  —  Year 2089
-FastAPI backend with SQLite persistence and Gemini AI overwatch (Oracle).
-"""
-from __future__ import annotations
-
 import os
 import sqlite3
-from datetime import datetime, timezone
-from typing import Optional
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+import requests
+from datetime import datetime
+from fastapi import FastAPI
 from pydantic import BaseModel
+from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
-# ── Environment ──────────────────────────────────────────────────────────────
-load_dotenv()  # reads .env if present (never hardcode keys)
-GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY")
+# Load the new Groq key
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-_genai_available = False
-if GEMINI_API_KEY:
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        _genai_available = True
-    except ImportError:
-        pass
+SYS_PROMPT = "You are Oracle (Barbara Gordon) operating the Batcomputer in the year 2089. You are Batman's tactical overwatch. Respond to his messages concisely, professionally, and with a dark, cyberpunk, tactical tone. Keep responses under 3 sentences. Do not break character."
 
-# ── App ──────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="Batcomputer API",
-    description="Year 2089 — Gotham City tactical overwatch system.",
-    version="2089.1.0",
-)
+app = FastAPI(title="Batcomputer API - Project Titan")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,221 +22,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = os.getenv("DB_PATH", "batcomputer.db")
+DB_NAME = "batcomputer.db"
 
-ORACLE_SYSTEM_PROMPT = (
-    "You are Oracle (Barbara Gordon) operating the Batcomputer in the year 2089. "
-    "You are Batman's tactical overwatch. Respond to his messages concisely, professionally, "
-    "and with a dark, cyberpunk, tactical tone. Keep responses under 3 sentences. "
-    "Do not break character."
-)
-
-
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
-
-def init_db() -> None:
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.executescript("""
-        CREATE TABLE IF NOT EXISTS missions (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            title        TEXT    NOT NULL,
-            description  TEXT,
-            priority     INTEGER NOT NULL DEFAULT 2,
-            is_completed INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS equipment (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            name            TEXT    NOT NULL,
-            status          TEXT    NOT NULL DEFAULT 'OPERATIONAL',
-            integrity_level INTEGER NOT NULL DEFAULT 100
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender    TEXT NOT NULL,
-            content   TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        );
-    """)
-
-    # Seed missions if empty
-    if cur.execute("SELECT COUNT(*) FROM missions").fetchone()[0] == 0:
-        cur.executemany(
-            "INSERT INTO missions (title, description, priority, is_completed) VALUES (?,?,?,?)",
-            [
-                ("Neutralize Scarecrow's Fear Gas Lab",
-                 "Intel confirms lab in The Narrows producing weaponised fear toxin. "
-                 "Eliminate the threat before 0300.", 1, 0),
-                ("Intercept Penguin Arms Shipment",
-                 "Cobblepot moving military-grade hardware through Gotham Harbour. "
-                 "Dock 7 — window closes at 0200.", 1, 0),
-                ("Track The Riddler's Encrypted Signal",
-                 "Transmission traced to Old Gotham Tower. Decrypt and locate source.", 2, 0),
-                ("Surveil Maroni Syndicate Safehouse",
-                 "Place quantum tap on Midtown safehouse. Extract comms data undetected.", 2, 0),
-                ("Recover Stolen Wayne Tech Prototype",
-                 "EMP gauntlet stolen from R&D vault. Retrieval priority: ALPHA.", 1, 0),
-            ],
-        )
-
-    # Seed equipment if empty
-    if cur.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 0:
-        cur.executemany(
-            "INSERT INTO equipment (name, status, integrity_level) VALUES (?,?,?)",
-            [
-                ("Mark VII Batsuit",         "OPERATIONAL", 94),
-                ("Batmobile Mk.IV",          "OPERATIONAL", 88),
-                ("Batwing Stealth Drone",    "STANDBY",     75),
-                ("Batarangs  ×24",           "READY",      100),
-                ("Grapple Gun",              "OPERATIONAL",  97),
-                ("Nano-EMP Device",          "CHARGING",    60),
-                ("Explosive Gel Dispenser",  "READY",       100),
-                ("AR Combat Goggles",        "OPERATIONAL",  82),
-            ],
-        )
-
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    # Keeping all your original tables safe!
+    c.execute('''CREATE TABLE IF NOT EXISTS missions 
+                 (id INTEGER PRIMARY KEY, title TEXT, description TEXT, priority TEXT, is_completed BOOLEAN)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS equipment 
+                 (id INTEGER PRIMARY KEY, name TEXT, status TEXT, integrity_level INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS messages 
+                 (id INTEGER PRIMARY KEY, sender TEXT, content TEXT, timestamp TEXT)''')
     conn.commit()
     conn.close()
 
+init_db()
 
-# ── Pydantic models ───────────────────────────────────────────────────────────
-class MessageIn(BaseModel):
-    sender: str
+class MessageCreate(BaseModel):
     content: str
+    sender: str = "Batman"
 
-
-class MessageOut(BaseModel):
-    id: int
-    sender: str
-    content: str
-    timestamp: str
-    ai_response: Optional[str] = None
-
-
-# ── Routes ────────────────────────────────────────────────────────────────────
-@app.get("/", tags=["status"])
-def root():
-    return {
-        "system": "Batcomputer 2089",
-        "status": "online",
-        "uplink": "SECURE",
-        "oracle": "active" if _genai_available else "offline — GEMINI_API_KEY not set",
-    }
-
-
-@app.get("/missions", tags=["missions"])
-def list_missions():
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM missions ORDER BY priority ASC, id ASC"
-    ).fetchall()]
+@app.get("/messages")
+def get_messages():
+    conn = get_db()
+    messages = conn.execute("SELECT * FROM messages ORDER BY id ASC").fetchall()
     conn.close()
-    return rows
+    return [dict(m) for m in messages]
 
-
-@app.get("/missions/{mission_id}", tags=["missions"])
-def get_mission(mission_id: int):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM missions WHERE id=?", (mission_id,)).fetchone()
-    conn.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="Mission not found")
-    return dict(row)
-
-
-@app.patch("/missions/{mission_id}/complete", tags=["missions"])
-def complete_mission(mission_id: int):
-    conn = get_conn()
-    conn.execute("UPDATE missions SET is_completed=1 WHERE id=?", (mission_id,))
+@app.post("/messages")
+def send_message(msg: MessageCreate):
+    conn = get_db()
+    timestamp = datetime.now().isoformat()
+    
+    # 1. Save Batman's Message
+    conn.execute("INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                 (msg.sender, msg.content, timestamp))
+    conn.commit()
+    
+    # 2. Get AI Response using GROQ
+    try:
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": SYS_PROMPT},
+                {"role": "user", "content": msg.content}
+            ]
+        }
+        
+        # Hit Groq's servers
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        
+        # Extract the reply
+        data = response.json()
+        oracle_reply = data["choices"][0]["message"]["content"].strip()
+        
+    except Exception as e:
+        print(f"🚨 GROQ API ERROR: {e}", flush=True)
+        oracle_reply = "Comms error. Uplink degraded."
+        
+    # 3. Save Oracle's Reply
+    reply_timestamp = datetime.now().isoformat()
+    conn.execute("INSERT INTO messages (sender, content, timestamp) VALUES (?, ?, ?)",
+                 ("Oracle", oracle_reply, reply_timestamp))
     conn.commit()
     conn.close()
-    return {"status": "mission completed", "id": mission_id}
-
-
-@app.get("/equipment", tags=["equipment"])
-def list_equipment():
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM equipment ORDER BY id ASC"
-    ).fetchall()]
-    conn.close()
-    return rows
-
-
-@app.get("/messages", tags=["comms"])
-def list_messages(limit: int = 50):
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM messages ORDER BY timestamp DESC LIMIT ?", (limit,)
-    ).fetchall()]
-    conn.close()
-    return rows
-
-
-@app.post("/messages", response_model=MessageOut, tags=["comms"])
-def send_message(body: MessageIn) -> MessageOut:
-    """Receive a message from Batman, generate an Oracle AI response, persist both."""
-    conn = get_conn()
-    ts = datetime.now(timezone.utc).isoformat()
-
-    # Persist incoming message
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO messages (sender, content, timestamp) VALUES (?,?,?)",
-        (body.sender, body.content, ts),
-    )
-    msg_id = cur.lastrowid
-
-    # Oracle AI response
-    ai_response: str | None = None
-    if _genai_available:
-        try:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            result = model.generate_content(
-                f"{ORACLE_SYSTEM_PROMPT}\n\nBatman: {body.content}"
-            )
-            ai_response = result.text.strip()
-            # Persist Oracle's reply
-            conn.execute(
-                "INSERT INTO messages (sender, content, timestamp) VALUES (?,?,?)",
-                ("Oracle", ai_response, datetime.now(timezone.utc).isoformat()),
-            )
-        except Exception as exc:  # never crash on AI errors
-            ai_response = (
-                f"[Batcomputer signal degraded — Oracle offline. Error: {type(exc).__name__}]"
-            )
-    else:
-        ai_response = (
-            "[Oracle offline — GEMINI_API_KEY not configured on server.]"
-        )
-
-    conn.commit()
-    conn.close()
-
-    return MessageOut(
-        id=msg_id,
-        sender=body.sender,
-        content=body.content,
-        timestamp=ts,
-        ai_response=ai_response,
-    )
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-    init_db()
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
+    
+    # 4. Return response to Android
+    return {"aiResponse": oracle_reply}
